@@ -1,6 +1,6 @@
 # RTMP Server with Muduo
 
-这是一个整合后的单目录 C++ 项目，包含：
+这是一个按模块组织的 C++ 项目，包含：
 
 - 基于 Reactor 模型的 muduo 风格网络库；
 - RTMP simple handshake 状态机；
@@ -12,28 +12,33 @@
 ## 目录结构
 
 ```text
-muduo/
-├── include/
-│   ├── base/                         # 日志、时间戳等基础组件
-│   ├── net/                          # muduo 网络库接口
+rtmp/
+├── apps/
+│   └── rtmp_handshake_server/        # 可部署的 RTMP 服务程序
+├── examples/
+│   └── echo_server/                  # 网络库使用示例
+├── include/                          # 可被其他目标引用的公共头文件
+│   ├── base/
+│   ├── net/
+│   └── rtmp/handshake/
+├── scripts/
+│   └── build.sh                      # 本地构建与测试入口
+├── src/                              # 库实现
+│   ├── base/
+│   ├── net/
 │   └── rtmp/
-│       ├── handshake/
-│       │   └── handshake_session.h   # RTMP 握手状态机接口
-│       └── server/
-│           └── rtmp_handshake_server.h
-├── src/
-│   ├── *.cpp                         # muduo 网络库实现
-│   └── rtmp/
-│       ├── handshake_session.cpp     # 握手协议实现
-│       ├── rtmp_handshake_server.cpp # muduo 适配层
-│       ├── main.cpp                  # RTMP 服务器入口
-│       └── CMakeLists.txt
-├── test/
-│   ├── test.cpp                      # muduo 回显服务器
-│   ├── handshake_session_test.cpp    # RTMP 握手单元测试
-│   └── CMakeLists.txt
-└── CMakeLists.txt                    # 项目唯一顶层构建配置
+├── tests/
+│   └── rtmp/                         # 按模块组织的自动化测试
+└── CMakeLists.txt                    # 顶层构建编排
 ```
+
+目录职责：
+
+- `include/` 和 `src/` 只存放可复用库的接口与实现；
+- `apps/` 存放最终部署程序及其私有代码；
+- `examples/` 不参与生产程序实现；
+- `tests/` 与业务模块对应，便于后续扩展单元测试和集成测试；
+- 每个独立模块维护自己的 `CMakeLists.txt`，顶层文件只负责项目级选项和子目录编排。
 
 ## RTMP 握手流程
 
@@ -60,10 +65,15 @@ client                         server
 完整网络库使用 Linux 的 `epoll` 和 `eventfd`，RTMP 服务器需要在 Linux 构建：
 
 ```bash
-cd muduo
 cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
+```
+
+也可以使用统一脚本（可从任意目录执行）：
+
+```bash
+./scripts/build.sh
 ```
 
 生成文件：
@@ -71,7 +81,7 @@ ctest --test-dir build --output-on-failure
 - `build/lib/libmuduo.a`
 - `build/lib/libmuduo.so`
 - `build/lib/librtmp_handshake.a`
-- `build/bin/muduo_test`
+- `build/bin/echo_server`
 - `build/bin/handshake_session_test`
 - `build/bin/rtmp_handshake_server`
 

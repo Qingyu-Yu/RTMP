@@ -1,4 +1,4 @@
-#include "rtmp/server/rtmp_handshake_server.h"
+#include "rtmp_handshake_server.h"
 
 #include "net/EventLoop.h"
 #include "net/InetAddress.h"

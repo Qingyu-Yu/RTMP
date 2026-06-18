@@ -1,45 +1,44 @@
-# muduo 网络库目标。
+add_subdirectory(rtmp)
 
-set(MUDUO_SRCS
-    Timestamp.cpp
-    Logger.cpp
-    InetAddress.cpp
-    TcpServer.cpp
-    TcpConnection.cpp
-    Channel.cpp
-    EventLoop.cpp
-    Poller.cpp
-    DefaultPoller.cpp
-    EpollPoller.cpp
-    Acceptor.cpp
-    EventLoopThread.cpp
-    EventLoopThreadPool.cpp
-    Buffer.cpp
-    CurrentThread.cpp
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    return()
+endif()
+
+find_package(Threads REQUIRED)
+
+set(MUDUO_SOURCES
+    base/Logger.cpp
+    base/Timestamp.cpp
+    net/Acceptor.cpp
+    net/Buffer.cpp
+    net/Channel.cpp
+    net/CurrentThread.cpp
+    net/DefaultPoller.cpp
+    net/EpollPoller.cpp
+    net/EventLoop.cpp
+    net/EventLoopThread.cpp
+    net/EventLoopThreadPool.cpp
+    net/InetAddress.cpp
+    net/Poller.cpp
+    net/TcpConnection.cpp
+    net/TcpServer.cpp
 )
 
-add_library(muduo_static STATIC
-    ${MUDUO_SRCS}
-)
+foreach(library_type IN ITEMS STATIC SHARED)
+    string(TOLOWER "${library_type}" library_suffix)
+    add_library(muduo_${library_suffix} ${library_type} ${MUDUO_SOURCES})
+    target_include_directories(muduo_${library_suffix}
+        PUBLIC
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    )
+    target_link_libraries(muduo_${library_suffix}
+        PUBLIC
+            Threads::Threads
+        PRIVATE
+            project_warnings
+    )
+    set_target_properties(muduo_${library_suffix} PROPERTIES OUTPUT_NAME muduo)
+endforeach()
 
-target_include_directories(muduo_static
-    PUBLIC
-        ${PROJECT_SOURCE_DIR}/include
-)
-
-set_target_properties(muduo_static PROPERTIES
-    OUTPUT_NAME muduo
-)
-
-add_library(muduo_shared SHARED
-    ${MUDUO_SRCS}
-)
-
-target_include_directories(muduo_shared
-    PUBLIC
-        ${PROJECT_SOURCE_DIR}/include
-)
-
-set_target_properties(muduo_shared PROPERTIES
-    OUTPUT_NAME muduo
-)
+add_library(muduo::static ALIAS muduo_static)
+add_library(muduo::shared ALIAS muduo_shared)
