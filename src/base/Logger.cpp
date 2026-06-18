@@ -1,4 +1,7 @@
 #include <cstdarg>
+#include <cstdio>
+#include <iostream>
+
 #include "base/Logger.h"
 
 
@@ -8,22 +11,17 @@ Logger &Logger::instance()
     return logger;
 }
 
-void Logger::setLogLevel(LogLevel level)
-{
-    logLevel_ = level;
-}
-
-void Logger::log(std::string msg, ...)
+void Logger::log(LogLevel level, const char* format, ...)
 {
     // 格式化日志消息，支持可变参数。
     char buf[1024];
     va_list args;
-    va_start(args, msg);
-    vsnprintf(buf, sizeof(buf), msg.c_str(), args);
+    va_start(args, format);
+    vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
 
     const std::string& timeStr = Timestamp::now().toString();
-    switch (logLevel_)
+    switch (level)
     {
         case INFO:
             std::cout << "[INFO] " << timeStr << " " << buf << std::endl;

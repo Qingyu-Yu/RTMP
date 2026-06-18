@@ -72,7 +72,6 @@ void EpollPoller::updateChannel(Channel *channel)
     }
     else
     {
-        int fd = channel->fd();
         if (channel->isNoneEvent())
         {
             update(EPOLL_CTL_DEL, channel);

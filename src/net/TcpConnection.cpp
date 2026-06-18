@@ -90,7 +90,7 @@ void TcpConnection::connectDestroyed()
     }
 }
 
-void TcpConnection::handleRead(Timestamp receiveTime)
+void TcpConnection::handleRead(Timestamp)
 {
     // 从 socket 读取数据到输入缓冲区。
     int savedErrno = 0;

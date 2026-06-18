@@ -20,14 +20,14 @@ int createEventfd()
 }
 
 EventLoop::EventLoop()
-    :looping_(false),
-    quit_(false),
-    callingPendingFunctors_(false),
-    ThreadId_(CurrentThread::tid()),
-    poller_(Poller::newDefaultPoller(this)),
-    wakeupFd_(createEventfd()),
-    wakeupChannel_(new Channel(this,wakeupFd_)),
-    currentActiveChannel_(nullptr)
+    : poller_(Poller::newDefaultPoller(this)),
+      currentActiveChannel_(nullptr),
+      wakeupFd_(createEventfd()),
+      wakeupChannel_(new Channel(this, wakeupFd_)),
+      ThreadId_(CurrentThread::tid()),
+      looping_(false),
+      quit_(false),
+      callingPendingFunctors_(false)
 {
     LOG_DEBUG("Eventloop create %p in thread %d\n",this,ThreadId_);
     if(t_loopInThisThread)
