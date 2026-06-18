@@ -61,7 +61,15 @@ void TcpServer::newConnection(int connfd, const InetAddress& peerAddr)
     conn->channel()->tie(conn);
     conn->setConnectionCallback(connectionCallback_);
     conn->setMessageCallback(messageCallback_);
-    conn->setCloseCallback(std::bind(&TcpServer::removeConnection, this, std::placeholders::_1));
+    // 先通知上层连接已经关闭，使 RTMP 层可以删除该连接对应的握手会话；
+    // 再执行 TcpServer 自身的连接表清理和 TcpConnection 销毁流程。
+    conn->setCloseCallback([this](const std::shared_ptr<TcpConnection>& connection) {
+        if (closeCallback_)
+        {
+            closeCallback_(connection);
+        }
+        removeConnection(connection);
+    });
 
     connections_[connName] = conn;
     // 在选中的 ioLoop 线程中完成连接建立操作。

@@ -1,4 +1,4 @@
-# src/CMakeLists.txt
+# muduo 网络库目标。
 
 set(MUDUO_SRCS
     Timestamp.cpp

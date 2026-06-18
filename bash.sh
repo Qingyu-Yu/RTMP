@@ -1,6 +1,7 @@
-cd build
-cmake ..
-make
-cd ..
-cd bin
-./muduo_test
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+cmake -S . -B build
+cmake --build build -j
+ctest --test-dir build --output-on-failure
