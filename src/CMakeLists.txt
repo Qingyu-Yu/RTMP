@@ -42,3 +42,5 @@ endforeach()
 
 add_library(muduo::static ALIAS muduo_static)
 add_library(muduo::shared ALIAS muduo_shared)
+
+add_subdirectory(rtmp/server)

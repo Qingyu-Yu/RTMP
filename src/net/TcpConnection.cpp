@@ -43,7 +43,10 @@ void TcpConnection::send(const std::string& message)
         }
         else
         {
-            loop_->queueInLoop(std::bind(&TcpConnection::sendInLoop, this, message));
+            const auto self = shared_from_this();
+            loop_->queueInLoop([self, message] {
+                self->sendInLoop(message);
+            });
         }
     }
 }
@@ -59,7 +62,10 @@ void TcpConnection::shutdown()
         }
         else
         {
-            loop_->queueInLoop(std::bind(&TcpConnection::shutdownInLoop, this));
+            const auto self = shared_from_this();
+            loop_->queueInLoop([self] {
+                self->shutdownInLoop();
+            });
         }
     }
 }

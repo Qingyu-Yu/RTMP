@@ -12,3 +12,18 @@ add_test(
     NAME handshake_session_test
     COMMAND handshake_session_test
 )
+
+add_executable(rtmp_protocol_test
+    rtmp/protocol_test.cpp
+)
+
+target_link_libraries(rtmp_protocol_test
+    PRIVATE
+        project_warnings
+        rtmp::core
+)
+
+add_test(
+    NAME rtmp_protocol_test
+    COMMAND rtmp_protocol_test
+)
