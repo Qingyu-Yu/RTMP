@@ -6,6 +6,7 @@
 namespace rtmp::amf {
 namespace {
 
+// AMF0 的长度、数组计数等整数均使用网络字节序。
 std::uint16_t readBe16(const std::uint8_t* data) {
     return static_cast<std::uint16_t>(
         (static_cast<std::uint16_t>(data[0]) << 8U) | data[1]);
@@ -37,6 +38,7 @@ public:
     const std::string& error() const noexcept { return error_; }
 
     bool read(Value& value) {
+        // 每个 AMF0 值都以 1 字节 marker 开始，后续布局由 marker 决定。
         if (!require(1, "missing AMF0 type marker")) {
             return false;
         }
@@ -52,6 +54,7 @@ public:
                 return readObject(value, false);
             case 0x05:
             case 0x06:
+                // Null(0x05) 与 Undefined(0x06) 对 RTMP 命令处理都可视为空值。
                 value = Value{};
                 return true;
             case 0x08:
@@ -66,6 +69,7 @@ public:
 
 private:
     bool require(std::size_t size, const char* message) {
+        // 所有读取先做统一边界检查，避免畸形网络数据导致越界访问。
         if (input_.size() - cursor_ < size) {
             error_ = message;
             return false;
@@ -78,6 +82,7 @@ private:
             return false;
         }
         std::uint64_t bits = 0;
+        // AMF0 Number 是 IEEE-754 double 的大端位表示。
         for (int i = 0; i < 8; ++i) {
             bits = (bits << 8U) | input_[cursor_++];
         }
@@ -99,6 +104,7 @@ private:
         if (!require(2, "truncated AMF0 string length")) {
             return false;
         }
+        // 当前实现支持 short string：2 字节长度 + 原始 UTF-8/字节内容。
         const std::size_t size = readBe16(input_.data() + cursor_);
         cursor_ += 2;
         if (!require(size, "truncated AMF0 string")) {
@@ -115,6 +121,8 @@ private:
             if (!require(4, "truncated AMF0 ECMA array length")) {
                 return false;
             }
+            // ECMA Array 的 4 字节 count 在实际流中可能不可靠；对象终止符
+            // 才是边界，因此这里只跳过 count，后续按键值对读取。
             cursor_ += 4;
         }
         Value::Object object;
@@ -129,6 +137,7 @@ private:
                     return false;
                 }
                 if (input_[cursor_] == 0x09) {
+                    // Object End 固定编码为 00 00 09。
                     ++cursor_;
                     break;
                 }
@@ -157,6 +166,7 @@ private:
         const std::uint32_t count = readBe32(input_.data() + cursor_);
         cursor_ += 4;
         if (count > 100000U) {
+            // 限制元素数量，避免恶意 count 触发超大 reserve 和长时间循环。
             error_ = "AMF0 array is too large";
             return false;
         }
@@ -173,13 +183,19 @@ private:
         return true;
     }
 
+    // Reader 不拥有 payload，生命周期由 decode() 调用栈保证。
     const std::vector<std::uint8_t>& input_;
+
+    // 下一个待解析字节的位置。
     std::size_t cursor_{0};
+
+    // 首个解析错误；解析失败后 Reader 不再继续推进。
     std::string error_;
 };
 
 void encodeStringBody(const std::string& value,
                       std::vector<std::uint8_t>& output) {
+    // 调用方已确保长度可以用 AMF0 short string 的 uint16_t 表示。
     const auto size = static_cast<std::uint16_t>(value.size());
     appendBe16(output, size);
     output.insert(output.end(), value.begin(), value.end());
@@ -242,6 +258,7 @@ const Value* Value::find(const std::string& key) const noexcept {
 
 bool decode(const std::vector<std::uint8_t>& input,
             std::vector<Value>& values, std::string* error) {
+    // 命令 payload 是多个顶层 AMF0 值的串联，不带额外的总数量字段。
     Reader reader(input);
     values.clear();
     while (!reader.done()) {
@@ -259,6 +276,7 @@ bool decode(const std::vector<std::uint8_t>& input,
 }
 
 void encode(const Value& value, std::vector<std::uint8_t>& output) {
+    // marker 与数据体必须连续写入；递归调用用于 Object 和 Strict Array。
     switch (value.type()) {
         case Value::Type::kNumber: {
             output.push_back(0x00);
@@ -283,11 +301,13 @@ void encode(const Value& value, std::vector<std::uint8_t>& output) {
             output.push_back(0x03);
             for (const auto& [key, item] : value.asObject()) {
                 if (key.size() > std::numeric_limits<std::uint16_t>::max()) {
+                    // AMF0 对象键使用 16 位长度，无法表示的键不写入线上数据。
                     continue;
                 }
                 encodeStringBody(key, output);
                 encode(item, output);
             }
+            // 对象结束标记：空键长度(00 00) + Object End marker(09)。
             output.insert(output.end(), {0x00, 0x00, 0x09});
             break;
         case Value::Type::kNull:

@@ -11,6 +11,7 @@ namespace {
 using protocol::Message;
 using protocol::MessageType;
 
+// RTMP 控制消息中的整数使用大端编码。
 void appendBe16(std::vector<std::uint8_t>& output, std::uint16_t value) {
     output.push_back(static_cast<std::uint8_t>(value >> 8U));
     output.push_back(static_cast<std::uint8_t>(value));
@@ -39,6 +40,7 @@ std::uint32_t readBe32(const std::vector<std::uint8_t>& input,
 }
 
 Message controlMessage(MessageType type, std::vector<std::uint8_t> payload) {
+    // Chunk Stream 2 按约定用于协议控制消息，Message Stream ID 保持 0。
     Message message;
     message.chunk_stream_id = 2;
     message.type = type;
@@ -48,6 +50,7 @@ Message controlMessage(MessageType type, std::vector<std::uint8_t> payload) {
 
 Message commandMessage(std::uint32_t stream_id,
                        std::vector<amf::Value> values) {
+    // 连接级命令放在 csid 3，NetStream 级命令放在独立的 csid 5。
     Message message;
     message.stream_id = stream_id;
     message.chunk_stream_id = stream_id == 0 ? 3 : 5;
@@ -57,6 +60,7 @@ Message commandMessage(std::uint32_t stream_id,
 }
 
 Message userControl(std::uint16_t event_type, std::uint32_t stream_id) {
+    // User Control payload = 2 字节事件类型 + 4 字节事件数据。
     std::vector<std::uint8_t> payload;
     appendBe16(payload, event_type);
     appendBe32(payload, stream_id);
@@ -73,6 +77,7 @@ amf::Value statusObject(const std::string& level, const std::string& code,
 }
 
 std::string normalizedStreamName(std::string name) {
+    // 查询参数通常用于鉴权，不应成为流注册表 key 的一部分。
     const auto query = name.find('?');
     if (query != std::string::npos) {
         name.resize(query);
@@ -87,6 +92,7 @@ std::string normalizedStreamName(std::string name) {
 
 ProcessResult RtmpSession::consume(const char* data, std::size_t size) {
     ProcessResult result;
+    // Acknowledgement sequence number 统计进入 RTMP 会话层的原始字节。
     received_bytes_ += size;
     auto decoded = decoder_.consume(data, size);
     if (!decoded.ok) {
@@ -95,6 +101,7 @@ ProcessResult RtmpSession::consume(const char* data, std::size_t size) {
         return result;
     }
     for (const auto& message : decoded.messages) {
+        // 一个 TCP 包可以重组出多个消息，按线上顺序逐个处理。
         handleMessage(message, result);
         if (!result.ok) {
             break;
@@ -103,6 +110,7 @@ ProcessResult RtmpSession::consume(const char* data, std::size_t size) {
     if (result.ok && acknowledgement_window_ > 0 &&
         received_bytes_ - last_acknowledged_bytes_ >=
             acknowledgement_window_) {
+        // 达到客户端声明的窗口后报告低 32 位累计字节数。
         std::vector<std::uint8_t> sequence;
         appendBe32(sequence, static_cast<std::uint32_t>(received_bytes_));
         result.outbound.push_back(controlMessage(
@@ -121,6 +129,7 @@ void RtmpSession::handleMessage(const Message& message,
         case MessageType::kAudio:
         case MessageType::kVideo:
         case MessageType::kDataAmf0:
+            // 只有 publish/play 已确定 stream key 后，媒体消息才有路由目标。
             if (!stream_name_.empty()) {
                 result.events.push_back(
                     {EventType::kMedia,
@@ -129,11 +138,13 @@ void RtmpSession::handleMessage(const Message& message,
             }
             break;
         case MessageType::kWindowAcknowledgementSize:
+            // 客户端可随时重新声明窗口，后续确认使用新值。
             if (message.payload.size() == 4) {
                 acknowledgement_window_ = readBe32(message.payload);
             }
             break;
         case MessageType::kUserControl:
+            // Event Type 6 是 Ping Request，响应必须复用相同的 4 字节时间值。
             if (message.payload.size() >= 6 &&
                 readBe16(message.payload, 0) == 6) {
                 result.outbound.push_back(
@@ -147,6 +158,7 @@ void RtmpSession::handleMessage(const Message& message,
 
 void RtmpSession::handleCommand(const Message& message,
                                 ProcessResult& result) {
+    // RTMP AMF0 命令的第一个值必须是命令名字符串，第二个通常是事务 ID。
     std::vector<amf::Value> values;
     std::string error;
     if (!amf::decode(message.payload, values, &error) || values.empty() ||
@@ -161,12 +173,15 @@ void RtmpSession::handleCommand(const Message& message,
         values.size() > 1 ? values[1].number() : 0;
 
     if (command == "connect") {
+        // connect 的 command object 中 app 决定后续流所属应用命名空间。
         if (values.size() > 2) {
             if (const auto* app = values[2].find("app")) {
                 application_ = normalizedStreamName(app->string());
             }
         }
 
+        // 先发送协议控制参数，再发送 connect 的 _result；该顺序兼容常见
+        // FFmpeg/Flash 客户端，并让后续较大响应使用新的出站 Chunk Size。
         std::vector<std::uint8_t> chunk_size;
         appendBe32(chunk_size, outbound_chunk_size_);
         result.outbound.push_back(
@@ -199,6 +214,7 @@ void RtmpSession::handleCommand(const Message& message,
     }
 
     if (command == "createStream") {
+        // 当前连接实现单 NetStream 模型，固定分配 Message Stream ID 1。
         result.outbound.push_back(commandMessage(
             0, {amf::Value("_result"), amf::Value(transaction),
                 amf::Value{}, amf::Value(static_cast<double>(stream_id_))}));
@@ -207,6 +223,7 @@ void RtmpSession::handleCommand(const Message& message,
 
     if (command == "releaseStream" || command == "FCPublish" ||
         command == "FCUnpublish") {
+        // 这些是常见推流客户端的兼容性预命令，不改变本地流状态。
         result.outbound.push_back(commandMessage(
             0, {amf::Value("_result"), amf::Value(transaction),
                 amf::Value{}, amf::Value{}}));
@@ -220,6 +237,7 @@ void RtmpSession::handleCommand(const Message& message,
             result.error = command + " command has no stream name";
             return;
         }
+        // 部分客户端可能错误地在 stream 0 上发送命令，回退到已分配的 1。
         stream_id_ = message.stream_id == 0 ? 1 : message.stream_id;
         stream_name_ = normalizedStreamName(values[3].string());
         if (application_.empty() || stream_name_.empty()) {
@@ -227,6 +245,7 @@ void RtmpSession::handleCommand(const Message& message,
             result.error = "RTMP application or stream name is empty";
             return;
         }
+        // 是否允许发布、目标流是否存在由全局 StreamRegistry 决定。
         result.events.push_back(
             {command == "publish" ? EventType::kPublish : EventType::kPlay,
              application_ + "/" + stream_name_, {}});
@@ -243,6 +262,7 @@ void RtmpSession::handleCommand(const Message& message,
 }
 
 Message RtmpSession::publishStatus(bool accepted) const {
+    // onStatus 不使用事务匹配，transaction id 按惯例为 0。
     return commandMessage(
         stream_id_,
         {amf::Value("onStatus"), amf::Value(0.0), amf::Value{},
@@ -256,6 +276,7 @@ Message RtmpSession::publishStatus(bool accepted) const {
 
 std::vector<Message> RtmpSession::playStatus(bool found) const {
     std::vector<Message> messages;
+    // User Control Stream Begin 必须先于 NetStream.Play.* 状态消息。
     messages.push_back(userControl(0, stream_id_));
     if (!found) {
         messages.push_back(commandMessage(
