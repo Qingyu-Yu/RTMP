@@ -2,14 +2,21 @@
 #include "net/EventLoop.h"
 
 EventLoopThread::EventLoopThread()
-    : loop_(nullptr),
-      exiting_(false)
+    : loop_(nullptr)
 {
 }
 
 EventLoopThread::~EventLoopThread()
 {
-    exiting_ = true;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (loop_)
+        {
+            // loop() 可能阻塞在 epoll_wait，quit() 会通过 eventfd 唤醒它。
+            loop_->quit();
+        }
+    }
+
     if (thread_.joinable())
     {
         thread_.join();
@@ -38,6 +45,9 @@ void EventLoopThread::threadFunc()
     }
     // 从这里开始阻塞处理 IO，直到其他线程调用 loop.quit()。
     loop.loop();
-    // loop() 返回后清空跨线程可见指针；随后栈对象 loop 析构。
-    loop_ = nullptr;
+    {
+        // loop() 返回后清空跨线程可见指针；随后栈对象 loop 析构。
+        std::lock_guard<std::mutex> lock(mutex_);
+        loop_ = nullptr;
+    }
 }

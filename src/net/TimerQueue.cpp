@@ -17,17 +17,17 @@
 namespace
 {
 
-int createTimerfd()
+int createTimerFd()
 {
     // timerfd 使用单调时钟等待，避免系统时间被校准时影响等待时长。
     // Timestamp 保存的是墙上时钟；reset 时先计算二者之间的相对时长。
-    const int timerfd =
+    const int timerFd =
         ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-    if (timerfd < 0)
+    if (timerFd < 0)
     {
-        LOG_FATAL("TimerQueue::createTimerfd failed: %s", std::strerror(errno));
+        LOG_FATAL("TimerQueue::createTimerFd failed: %s", std::strerror(errno));
     }
-    return timerfd;
+    return timerFd;
 }
 
 struct timespec howMuchTimeFromNow(Timestamp when)
@@ -46,27 +46,27 @@ struct timespec howMuchTimeFromNow(Timestamp when)
     return value;
 }
 
-void readTimerfd(int timerfd, Timestamp now)
+void readTimerFd(int timerFd, Timestamp now)
 {
     uint64_t expirations = 0;
-    const ssize_t n = ::read(timerfd, &expirations, sizeof expirations);
+    const ssize_t n = ::read(timerFd, &expirations, sizeof expirations);
     if (n != sizeof expirations)
     {
-        LOG_ERROR("TimerQueue::readTimerfd read %zd bytes at %s",
+        LOG_ERROR("TimerQueue::readTimerFd read %zd bytes at %s",
                   n,
                   now.toString().c_str());
     }
 }
 
-void resetTimerfd(int timerfd, Timestamp expiration)
+void resetTimerFd(int timerFd, Timestamp expiration)
 {
     // TimerQueue 只让 timerfd 关注 timers_ 中最早的一个时间点。
     // 该时间到达后，再一次性取出所有已经过期的 Timer。
     struct itimerspec newValue = {};
     newValue.it_value = howMuchTimeFromNow(expiration);
-    if (::timerfd_settime(timerfd, 0, &newValue, nullptr) < 0)
+    if (::timerfd_settime(timerFd, 0, &newValue, nullptr) < 0)
     {
-        LOG_ERROR("TimerQueue::resetTimerfd failed: %s", std::strerror(errno));
+        LOG_ERROR("TimerQueue::resetTimerFd failed: %s", std::strerror(errno));
     }
 }
 
@@ -74,19 +74,21 @@ void resetTimerfd(int timerfd, Timestamp expiration)
 
 TimerQueue::TimerQueue(EventLoop* loop)
     : loop_(loop),
-      timerfd_(createTimerfd()),
-      timerfdChannel_(new Channel(loop, timerfd_))
+      timerFd_(createTimerFd()),
+      timerChannel_(std::make_unique<Channel>(loop, timerFd_))
 {
-    timerfdChannel_->setReadCallback(
-        std::bind(&TimerQueue::handleRead, this, std::placeholders::_1));
-    timerfdChannel_->enableReading();
+    timerChannel_->setReadCallback([this] {
+        handleRead();
+    });
+    timerChannel_->enableReading();
 }
 
 TimerQueue::~TimerQueue()
 {
-    timerfdChannel_->disableAll();
-    timerfdChannel_->remove();
-    ::close(timerfd_);
+    loop_->assertInLoopThread();
+    timerChannel_->disableAll();
+    timerChannel_->remove();
+    ::close(timerFd_);
 
     for (const Entry& timer : timers_)
     {
@@ -102,26 +104,32 @@ TimerId TimerQueue::addTimer(
     // Timer 的生命周期由 TimerQueue 接管。跨线程调用时，裸指针被捕获进
     // EventLoop 的任务队列，直到 addTimerInLoop() 插入集合。
     Timer* timer = new Timer(std::move(callback), when, interval);
-    loop_->runInLoop(std::bind(&TimerQueue::addTimerInLoop, this, timer));
+    loop_->runInLoop([this, timer] {
+        addTimerInLoop(timer);
+    });
     return TimerId(timer, timer->sequence());
 }
 
 void TimerQueue::cancel(TimerId timerId)
 {
-    loop_->runInLoop(std::bind(&TimerQueue::cancelInLoop, this, timerId));
+    loop_->runInLoop([this, timerId] {
+        cancelInLoop(timerId);
+    });
 }
 
 void TimerQueue::addTimerInLoop(Timer* timer)
 {
+    loop_->assertInLoopThread();
     const bool earliestChanged = insert(timer);
     if (earliestChanged)
     {
-        resetTimerfd(timerfd_, timer->expiration());
+        resetTimerFd(timerFd_, timer->expiration());
     }
 }
 
 void TimerQueue::cancelInLoop(TimerId timerId)
 {
+    loop_->assertInLoopThread();
     const ActiveTimer timer(timerId.timer_, timerId.sequence_);
     const auto active = activeTimers_.find(timer);
     if (active != activeTimers_.end())
@@ -145,11 +153,12 @@ void TimerQueue::cancelInLoop(TimerId timerId)
     }
 }
 
-void TimerQueue::handleRead(Timestamp)
+void TimerQueue::handleRead()
 {
+    loop_->assertInLoopThread();
     const Timestamp now(Timestamp::now());
     // 必须读取 timerfd，否则其“可读”状态不会被清除，epoll 会持续立即返回。
-    readTimerfd(timerfd_, now);
+    readTimerFd(timerFd_, now);
 
     // 先把到期 Timer 从主集合移出，再执行用户回调。这样回调可以安全地
     // 添加或取消其他定时器，不会破坏当前遍历。
@@ -206,7 +215,7 @@ void TimerQueue::reset(const std::vector<Entry>& expired, Timestamp now)
 
     if (!timers_.empty())
     {
-        resetTimerfd(timerfd_, timers_.begin()->second->expiration());
+        resetTimerFd(timerFd_, timers_.begin()->second->expiration());
     }
 }
 

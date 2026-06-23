@@ -4,9 +4,9 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 #include "base/noncopyable.h"
-#include "base/Timestamp.h"
 #include "net/InetAddress.h"
 #include "net/TcpConnection.h"
 #include "net/Acceptor.h"
@@ -29,7 +29,10 @@ public:
     using CloseCallback = TcpConnection::CloseCallback;
 
     // 构造函数，传入事件循环和监听地址。
-    TcpServer(EventLoop* loop, const InetAddress& listenAddr, const std::string& nameArg = "TcpServer");
+    TcpServer(
+        EventLoop* loop,
+        const InetAddress& listenAddress,
+        const std::string& name = "TcpServer");
     ~TcpServer();
 
     // 设置连接、消息、关闭事件回调。
@@ -43,7 +46,9 @@ public:
     void start();
 
 private:
-    void newConnection(int connfd, const InetAddress& peerAddr);
+    void handleNewConnection(
+        int connectionFd,
+        const InetAddress& peerAddress);
     void removeConnection(const std::shared_ptr<TcpConnection>& conn);
     void removeConnectionInLoop(const std::shared_ptr<TcpConnection>& conn);
 
@@ -51,7 +56,7 @@ private:
     const std::string name_; // 服务器名称。
     std::unique_ptr<Acceptor> acceptor_; // 接受新连接的 Acceptor。
     std::unique_ptr<EventLoopThreadPool> threadPool_; // EventLoop 线程池，用于分发具体连接到 worker loop。
-    const InetAddress listenAddr_; // 监听地址。
+    const InetAddress listenAddress_; // 监听地址。
     bool started_; // 是否已经启动。
     int nextConnId_; // 为新连接生成唯一 id。
 

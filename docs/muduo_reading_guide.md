@@ -4,16 +4,16 @@
 
 1. `EventLoop`：事件循环和线程边界；
 2. `Channel`：一个 fd 对应哪些回调；
-3. `Poller/EpollPoller`：如何等待并返回就绪事件；
-4. `Acceptor/TcpServer`：新连接如何建立和分配；
-5. `TcpConnection/Buffer`：连接如何收发数据；
+3. `Epoll`：如何等待并返回就绪事件；
+4. `Socket/Acceptor/TcpServer`：socket 如何封装、连接如何建立和分配；
+5. `TcpConnection/Buffer`：连接状态如何变化、数据如何收发；
 6. `TimerQueue`：定时器如何复用同一套事件分发机制。
 
 ## 1. 核心对象关系
 
 ```text
 EventLoop
-  ├── Poller / EpollPoller
+  ├── Epoll
   │     └── 记录多个 Channel（不拥有）
   ├── wakeupChannel
   │     └── eventfd：跨线程唤醒
@@ -23,12 +23,14 @@ EventLoop
         └── 其他线程提交的任务
 ```
 
-`EventLoop` 是调度者，`Poller` 是等待者，`Channel` 是事件与回调的连接器。
+`EventLoop` 是调度者，`Epoll` 是对 Linux epoll 的直接封装，`Channel` 是事件与
+回调的连接器。
 
 - `EventLoop` 不直接读写网络数据；
-- `Poller` 不处理业务回调；
+- `Epoll` 只负责等待事件和维护 fd 注册状态，不处理业务回调；
 - `Channel` 不拥有文件描述符；
-- `TcpConnection` 才真正拥有连接 socket 和收发缓冲区。
+- `Socket` 使用 RAII 拥有文件描述符，析构时自动关闭；
+- `TcpConnection` 拥有连接 Socket、Channel 和收发缓冲区。
 
 ## 2. 一轮事件循环
 
@@ -61,7 +63,7 @@ listen socket 可读
     ↓
 Acceptor::handleRead
     ↓ accept()
-得到 connfd
+得到 connectionFd
     ↓
 TcpServer::newConnection
     ↓
@@ -76,6 +78,10 @@ Channel 开始监听 EPOLLIN
 
 主循环 `baseLoop` 负责监听和维护连接表，工作循环 `ioLoop` 负责具体连接的 IO。
 一条连接选定 `ioLoop` 后，不会在工作线程之间迁移。
+
+`Socket` 集中封装 `socket/bind/listen/accept/send/shutdown/close`。因此
+`Acceptor` 主要表达“接受连接”，`TcpConnection` 主要表达“收发数据”，系统调用
+错误处理不会散落在多个业务类中。
 
 ## 4. 收数据流程
 
@@ -131,7 +137,29 @@ Channel 开启 EPOLLOUT
 
 异步任务通常捕获 `shared_ptr<TcpConnection>`，保证任务真正执行前连接对象不会析构。
 
-## 7. 定时器流程
+只允许 loop 线程调用的函数会执行 `assertInLoopThread()`。如果错误地从其他线程操作
+Channel 或 Epoll，程序会在错误发生的位置终止，而不是稍后表现为随机数据竞争。
+
+## 7. 连接状态
+
+`TcpConnection` 不再用一个布尔值同时表示所有生命周期，而是使用四个明确状态：
+
+```text
+kConnecting
+    ↓ connectEstablished
+kConnected
+    ↓ shutdown
+kDisconnecting
+    ↓ 对端关闭或本地销毁
+kDisconnected
+```
+
+- `send()` 只接受已连接状态；
+- `shutdown()` 将状态切换为正在断开，并等待输出缓冲区发送完成；
+- `handleClose()` 负责通知上层；
+- `connectDestroyed()` 必须回到连接所属 ioLoop，最终从 Epoll 移除 Channel。
+
+## 8. 定时器流程
 
 `TimerQueue` 用两个集合管理 Timer：
 
@@ -157,13 +185,13 @@ timerfd 到期可读
 回调执行期间取消重复 Timer 是特殊情况：该 Timer 已暂时离开主集合，不能立即删除。
 `cancelingTimers_` 记录取消请求，等本批回调结束后再安全释放。
 
-## 8. 对象所有权
+## 9. 对象所有权
 
 ```text
 TcpServer
-  └── connections_ 持有 shared_ptr<TcpConnection>
+  └── connections_[connection.name()] 持有 shared_ptr<TcpConnection>
+        ├── Socket 独占并自动关闭 fd
         ├── 独占 Channel
-        ├── 拥有 socket fd
         ├── 拥有 inputBuffer
         └── 拥有 outputBuffer
 ```
@@ -172,16 +200,19 @@ TcpServer
 `TcpConnection` 存活，同时又不会形成循环引用。
 
 关闭连接时先回到 `baseLoop` 删除连接表中的 `shared_ptr`，再清理 Channel。等所有临时
-`shared_ptr` 释放后，`TcpConnection` 析构并关闭 socket。
+`shared_ptr` 释放后，`TcpConnection` 析构，其成员 `Socket` 自动关闭 fd。
 
-## 9. 推荐调试断点
+连接名称同时作为 `connections_` 的 key，因此关闭时可以通过 `conn->name()` 直接删除，
+不再遍历整个连接表。
+
+## 10. 推荐调试断点
 
 首次跟代码时，可按顺序在以下函数设置断点：
 
 1. `Acceptor::handleRead`
 2. `TcpServer::newConnection`
 3. `TcpConnection::connectEstablished`
-4. `EpollPoller::poll`
+4. `Epoll::wait`
 5. `Channel::handleEventWithGuard`
 6. `TcpConnection::handleRead`
 7. `TcpConnection::sendInLoop`

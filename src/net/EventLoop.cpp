@@ -1,7 +1,12 @@
 #include "net/EventLoop.h"
 #include "net/Channel.h"
-#include "net/Poller.h"
+#include "net/Epoll.h"
 #include "net/TimerQueue.h"
+
+#include <sys/eventfd.h>
+#include <unistd.h>
+
+#include "base/Logger.h"
 
 __thread EventLoop* t_loopInThisThread = nullptr;
 
@@ -25,10 +30,10 @@ int createEventfd()
 } // namespace
 
 EventLoop::EventLoop()
-    : poller_(Poller::newDefaultPoller(this)),
-      timerQueue_(new TimerQueue(this)),
+    : epoll_(std::make_unique<Epoll>()),
+      timerQueue_(std::make_unique<TimerQueue>(this)),
       wakeupFd_(createEventfd()),
-      wakeupChannel_(new Channel(this, wakeupFd_)),
+      wakeupChannel_(std::make_unique<Channel>(this, wakeupFd_)),
       threadId_(CurrentThread::tid()),
       looping_(false),
       quit_(false),
@@ -44,15 +49,17 @@ EventLoop::EventLoop()
         t_loopInThisThread = this;
     }
 
-    // wakeupFd_ 与普通 socket 一样通过 Channel 接入 Poller。
+    // wakeupFd_ 与普通 socket 一样通过 Channel 接入 Epoll。
     // 当其他线程调用 wakeup() 时，handleRead() 负责清空 eventfd 计数。
-    wakeupChannel_->setReadCallback(
-        std::bind(&EventLoop::handleRead, this, std::placeholders::_1));
+    wakeupChannel_->setReadCallback([this] {
+        handleRead();
+    });
     wakeupChannel_->enableReading();
 }
 
 EventLoop::~EventLoop()
 {
+    assertInLoopThread();
     wakeupChannel_->disableAll();
     wakeupChannel_->remove();
     ::close(wakeupFd_);
@@ -61,6 +68,7 @@ EventLoop::~EventLoop()
 
 void EventLoop::loop()
 {
+    assertInLoopThread();
     looping_ = true;
     quit_ = false;
     LOG_INFO("EventLoop start");
@@ -69,12 +77,12 @@ void EventLoop::loop()
         activeChannels_.clear();
 
         // 阶段 1：等待 socket、timerfd 或 eventfd 变为就绪。
-        pollReturnTime_ = poller_->poll(kPollTimeMs, &activeChannels_);
+        epoll_->wait(kPollTimeMs, activeChannels_);
 
-        // 阶段 2：逐个分发事件。Channel 再根据 revents_ 调用对象回调。
+        // 阶段 2：逐个分发事件。Channel 根据 receivedEvents_ 调用对象回调。
         for (Channel* channel : activeChannels_)
         {
-            channel->handleEvent(pollReturnTime_);
+            channel->handleEvent();
         }
 
         // 阶段 3：执行跨线程任务。放在 IO 回调之后可保证本轮事件先处理完。
@@ -146,26 +154,42 @@ void EventLoop::queueInLoop(Functor cb)
 
 void EventLoop::wakeup()
 {
-    uint64_t one = 1;
-    ssize_t n = write(wakeupFd_, &one, sizeof one);
+    const uint64_t one = 1;
+    const ssize_t n = ::write(wakeupFd_, &one, sizeof one);
     if (n != sizeof one)
     {
         LOG_ERROR("wakeup failed");
     }
 }
-void EventLoop::updateChannel(Channel *channel)
+void EventLoop::updateChannel(Channel* channel)
 {
-    poller_->updateChannel(channel);
+    assertInLoopThread();
+    epoll_->updateChannel(channel);
 }
-void EventLoop::removeChannel(Channel *channel)
+void EventLoop::removeChannel(Channel* channel)
 {
-    poller_->removeChannel(channel);
+    assertInLoopThread();
+    epoll_->removeChannel(channel);
 }
-bool EventLoop::hasChannel(Channel *channel)
+bool EventLoop::hasChannel(Channel* channel)
 {
-    return poller_->hasChannel(channel);
+    assertInLoopThread();
+    return epoll_->hasChannel(channel);
 }
-void EventLoop::handleRead(Timestamp)
+
+void EventLoop::assertInLoopThread() const
+{
+    if (!isInLoopThread())
+    {
+        LOG_FATAL(
+            "EventLoop %p belongs to thread %d, called from thread %d",
+            this,
+            threadId_,
+            CurrentThread::tid());
+    }
+}
+
+void EventLoop::handleRead()
 {
     uint64_t counter = 0;
     const ssize_t n = ::read(wakeupFd_, &counter, sizeof counter);

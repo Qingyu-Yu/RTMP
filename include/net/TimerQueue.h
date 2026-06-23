@@ -37,15 +37,15 @@ private:
 
     void addTimerInLoop(Timer* timer);
     void cancelInLoop(TimerId timerId);
-    void handleRead(Timestamp receiveTime);
+    void handleRead();
 
     std::vector<Entry> getExpired(Timestamp now);
     void reset(const std::vector<Entry>& expired, Timestamp now);
     bool insert(Timer* timer);
 
     EventLoop* loop_;                         // TimerQueue 所属事件循环。
-    const int timerfd_;                       // Linux 定时器文件描述符。
-    std::unique_ptr<Channel> timerfdChannel_; // 将 timerfd 可读事件接入 Poller。
+    const int timerFd_;                       // Linux 定时器文件描述符。
+    std::unique_ptr<Channel> timerChannel_;   // 将 timerfd 可读事件接入 Epoll。
     TimerList timers_;                        // 按到期时间排序，拥有 Timer 对象。
     ActiveTimerSet activeTimers_;             // 按身份查找，用于 cancel。
     bool callingExpiredTimers_{false};        // 当前是否正在执行一批到期回调。

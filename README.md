@@ -116,7 +116,7 @@ loop.cancel(heartbeat);
 
 如果不熟悉 Reactor、epoll 或 muduo 的线程模型，建议先阅读
 [`docs/muduo_reading_guide.md`](docs/muduo_reading_guide.md)。文档按连接建立、
-收发数据、跨线程任务、定时器和对象生命周期拆解了完整调用流程。
+Socket RAII、连接状态、收发数据、跨线程任务、定时器和对象生命周期拆解了完整调用流程。
 
 ## 构建
 

@@ -24,7 +24,6 @@ private:
 
     std::thread thread_;
     EventLoop* loop_; // 指向子线程栈上的 EventLoop，仅在线程运行期间有效。
-    bool exiting_;
     std::mutex mutex_;
     std::condition_variable cond_;
 };

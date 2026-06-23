@@ -22,6 +22,7 @@ void EventLoopThreadPool::setThreadNum(int numThreads)
 
 void EventLoopThreadPool::start()
 {
+    baseLoop_->assertInLoopThread();
     if (started_)
     {
         return;
@@ -32,7 +33,7 @@ void EventLoopThreadPool::start()
     {
         // startLoop() 只有在线程中的 EventLoop 就绪后才返回，因此放入 loops_
         // 的指针可以立即用于分配连接。
-        std::unique_ptr<EventLoopThread> thread(new EventLoopThread());
+        auto thread = std::make_unique<EventLoopThread>();
         loops_.push_back(thread->startLoop());
         threads_.push_back(std::move(thread));
     }
@@ -45,6 +46,7 @@ void EventLoopThreadPool::start()
 
 EventLoop* EventLoopThreadPool::getNextLoop()
 {
+    baseLoop_->assertInLoopThread();
     EventLoop* loop = baseLoop_;
     if (!loops_.empty())
     {

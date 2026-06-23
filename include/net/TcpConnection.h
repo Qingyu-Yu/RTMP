@@ -1,14 +1,16 @@
 #pragma once
 
-#include <memory>
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "base/noncopyable.h"
 #include "net/Buffer.h"
 #include "net/Channel.h"
 #include "net/InetAddress.h"
-#include "base/Timestamp.h"
+#include "net/Socket.h"
 
 class EventLoop;
 
@@ -27,20 +29,20 @@ public:
     using CloseCallback = std::function<void(const Ptr&)>;
     using WriteCompleteCallback = Channel::EventCallback;
 
-    // 构造函数，关联 EventLoop、socket 描述符和地址信息。
+    // 构造函数，关联 EventLoop、连接名称、socket 描述符和地址信息。
     // 每个 TcpConnection 代表一个连接，包含 socket、Channel、输入/输出缓冲区和回调。
-    TcpConnection(EventLoop* loop, int sockfd,
-                  const InetAddress& localAddr,
-                  const InetAddress& peerAddr);
+    TcpConnection(EventLoop* loop,
+                  std::string name,
+                  int socketFd,
+                  const InetAddress& peerAddress);
 
-    // 析构函数，负责关闭 socket。
-    ~TcpConnection();
+    ~TcpConnection() = default;
 
     EventLoop* getLoop() const { return loop_; }
     const std::string& name() const { return name_; }
-    const InetAddress& localAddress() const { return localAddr_; }
-    const InetAddress& peerAddress() const { return peerAddr_; }
-    bool connected() const { return connected_; }
+    const InetAddress& localAddress() const { return localAddress_; }
+    const InetAddress& peerAddress() const { return peerAddress_; }
+    bool connected() const;
 
     // 设置各种回调。
     void setConnectionCallback(ConnectionCallback cb) { connectionCallback_ = std::move(cb); }
@@ -63,7 +65,7 @@ public:
     void connectDestroyed();
 
     // 事件回调接口，由 Channel 触发。
-    void handleRead(Timestamp receiveTime);
+    void handleRead();
     void handleWrite();
     void handleClose();
     void handleError();
@@ -73,16 +75,24 @@ public:
     Buffer* outputBuffer() { return &outputBuffer_; }
 
 private:
+    enum class State
+    {
+        kConnecting,
+        kConnected,
+        kDisconnecting,
+        kDisconnected,
+    };
+
     void sendInLoop(const std::string& message);
     void shutdownInLoop();
 
-    EventLoop* loop_;                     // 事件循环所属线程。
-    std::unique_ptr<Channel> channel_;    // 用于 socket IO 的 Channel 对象。
-    const std::string name_;             // 连接名称。
-    int sockfd_;                         // 连接 socket 描述符。
-    InetAddress localAddr_;              // 本地地址。
-    InetAddress peerAddr_;               // 对端地址。
-    bool connected_;                     // 当前是否允许继续发送/接收。
+    EventLoop* loop_;                    // 连接所属的唯一事件循环。
+    const std::string name_;             // TcpServer 分配的唯一连接名称。
+    Socket socket_;                      // RAII 管理连接 fd。
+    std::unique_ptr<Channel> channel_;   // 把连接 fd 接入 Epoll。
+    InetAddress localAddress_;           // 本地地址。
+    InetAddress peerAddress_;            // 对端地址。
+    std::atomic<State> state_;           // 显式连接生命周期，允许跨线程读取。
 
     Buffer inputBuffer_;                 // 接收数据缓冲区。
     Buffer outputBuffer_;                // 发送数据缓冲区。
