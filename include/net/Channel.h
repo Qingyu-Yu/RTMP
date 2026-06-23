@@ -8,6 +8,13 @@
 
 class EventLoop;
 
+// Channel 是“文件描述符及其事件回调”的包装，不拥有 fd，也不执行 epoll_wait。
+//
+// events_  表示用户希望监听什么事件，例如 EPOLLIN；
+// revents_ 表示 Poller 本轮实际检测到什么事件；
+// index_   表示该 Channel 当前是否已经注册到 epoll。
+//
+// Channel 修改 events_ 后通知 EventLoop，EventLoop 再转交 Poller 调用 epoll_ctl。
 class Channel : noncopyable
 {
 public:
@@ -29,7 +36,8 @@ public:
     void setCloseCallback(EventCallback cb) { closeCallback_ = std::move(cb); }
     void setErrorCallback(EventCallback cb) { errorCallback_ = std::move(cb); }
 
-    // 绑定拥有者对象，防止对象销毁后触发事件。
+    // 将 Channel 与拥有它的 shared_ptr 对象绑定。
+    // 处理事件前会尝试提升 weak_ptr；提升失败说明拥有者已销毁，本次事件被忽略。
     void tie(const std::shared_ptr<void>& obj);
 
     int fd() const { return fd_; }
@@ -48,7 +56,8 @@ public:
     bool isReading() const { return events_ & kReadEvent; }
     bool isWriting() const { return events_ & kWriteEvent; }
 
-    int index() { return index_; }
+    // index_ 的具体值由 EpollPoller 维护，Channel 本身不解释状态。
+    int index() const { return index_; }
     void set_index(int idx) { index_ = idx; }
 
     EventLoop* ownerLoop() { return loop_; }
@@ -68,7 +77,7 @@ private:
     int revents_; // poller 返回的实际发生事件。
     int index_; // 在 Poller 中的状态标记。
 
-    std::weak_ptr<void> tie_; // 与拥有者的弱引用，防止对象被销毁后继续处理事件。
+    std::weak_ptr<void> tie_; // 通常绑定 TcpConnection，防止回调期间对象析构。
     bool tied_; // 是否已经绑定了拥有者。
 
     ReadEventCallback readCallback_; // 读事件回调。

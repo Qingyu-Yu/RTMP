@@ -19,6 +19,9 @@ EventLoopThread::~EventLoopThread()
 EventLoop* EventLoopThread::startLoop()
 {
     thread_ = std::thread(&EventLoopThread::threadFunc, this);
+
+    // loop_ 指向子线程栈上的对象，必须等子线程创建完 EventLoop 才能返回。
+    // 条件变量的谓词同时处理虚假唤醒。
     std::unique_lock<std::mutex> lock(mutex_);
     cond_.wait(lock, [this] { return loop_ != nullptr; });
     return loop_;
@@ -26,13 +29,15 @@ EventLoop* EventLoopThread::startLoop()
 
 void EventLoopThread::threadFunc()
 {
-    // 每个线程创建一个独立的 EventLoop，并在该线程中运行。
+    // EventLoop 在子线程栈上创建，因此它记录的 threadId_ 正是当前子线程。
     EventLoop loop;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         loop_ = &loop;
         cond_.notify_one();
     }
+    // 从这里开始阻塞处理 IO，直到其他线程调用 loop.quit()。
     loop.loop();
+    // loop() 返回后清空跨线程可见指针；随后栈对象 loop 析构。
     loop_ = nullptr;
 }

@@ -9,6 +9,10 @@
 class EventLoop;
 class Channel;
 
+// Poller 是 IO 多路复用器的抽象接口。
+//
+// EventLoop 只依赖此接口，不关心底层是 epoll、poll 还是其他实现。
+// Poller 不拥有 Channel；channels_ 仅用于记录 fd 到 Channel 的对应关系。
 class Poller : noncopyable
 {
 public:
@@ -35,7 +39,7 @@ public:
 
 protected:
     using ChannelMap = std::unordered_map<int, Channel*>;
-    ChannelMap channels_; // 已注册的 fd 到 Channel 的映射。
+    ChannelMap channels_; // fd -> Channel，仅保存非拥有型指针。
 
 private:
     EventLoop* ownerLoop_; // 拥有该 Poller 的事件循环。

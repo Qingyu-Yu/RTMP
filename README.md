@@ -3,6 +3,7 @@
 这是一个按模块组织的 C++17 RTMP 服务器，包含：
 
 - 基于 Reactor 模型的 muduo 风格网络库；
+- 支持微秒时间戳、单次/重复定时任务及跨线程取消；
 - RTMP simple handshake 状态机；
 - RTMP Chunk 编解码和 AMF0 编解码；
 - `connect`、`createStream`、`publish`、`play` 等命令处理；
@@ -91,6 +92,31 @@ rtmp_server executable
 `rtmp::core` 和 `rtmp::handshake` 不依赖 muduo，可以在非 Linux 平台独立
 构建和测试。`rtmp::server` 是明确的 Linux/muduo 适配层，其公共接口通过
 PImpl 隐藏连接表、锁和协议会话等实现细节。
+
+## 定时任务
+
+`EventLoop` 提供与 muduo 一致的常用定时接口：
+
+```cpp
+TimerId once = loop.runAfter(1.0, [] {
+    // 1 秒后执行一次
+});
+
+TimerId heartbeat = loop.runEvery(5.0, [] {
+    // 每 5 秒执行一次
+});
+
+loop.cancel(heartbeat);
+```
+
+`runAt` 接受绝对 `Timestamp`，`runAfter` 和 `runEvery` 的时间单位为秒。
+定时器可从其他线程添加或取消，实际队列操作统一在所属 `EventLoop` 线程执行。
+
+## 阅读网络库
+
+如果不熟悉 Reactor、epoll 或 muduo 的线程模型，建议先阅读
+[`docs/muduo_reading_guide.md`](docs/muduo_reading_guide.md)。文档按连接建立、
+收发数据、跨线程任务、定时器和对象生命周期拆解了完整调用流程。
 
 ## 构建
 

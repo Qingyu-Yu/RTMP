@@ -6,14 +6,15 @@
 
 #include "Poller.h"
 
-// 基于 epoll 的 Poller 实现。
+// Poller 的 Linux epoll 实现。
+// 一个 EpollPoller 只服务于一个 EventLoop，也只能在该 loop 线程中操作。
 class EpollPoller : public Poller
 {
 public:
     EpollPoller(EventLoop* loop);
     ~EpollPoller() override;
 
-        // 使用 epoll_wait 等待事件。
+    // 使用 epoll_wait 等待事件。
     Timestamp poll(int timeoutMs, ChannelList* activeChannels) override;
 
     // 更新 Channel 的关注事件。
@@ -25,8 +26,8 @@ public:
 private:
     using EventList = std::vector<struct epoll_event>;
 
-    int epollfd_; // epoll 实例的文件描述符。
-    EventList events_; // epoll_wait 返回的事件列表。
+    int epollfd_;      // epoll_create1() 创建的内核 epoll 实例。
+    EventList events_; // 接收 epoll_wait() 输出；容量不足时动态扩展。
     static const int kInitEventListSize = 16; // 初始事件列表容量。
 
     // 将 epoll 返回的事件转换为 activeChannels。

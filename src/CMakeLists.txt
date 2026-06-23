@@ -22,6 +22,8 @@ set(MUDUO_SOURCES
     net/Poller.cpp
     net/TcpConnection.cpp
     net/TcpServer.cpp
+    net/Timer.cpp
+    net/TimerQueue.cpp
 )
 
 foreach(library_type IN ITEMS STATIC SHARED)

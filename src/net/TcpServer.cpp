@@ -20,6 +20,7 @@ TcpServer::TcpServer(EventLoop* loop, const InetAddress& listenAddr, const std::
       started_(false),
       nextConnId_(1)
 {
+    // Acceptor 只产出 connfd；TcpServer 接管后续对象创建、线程分配和生命周期。
     acceptor_->setNewConnectionCallback(std::bind(&TcpServer::newConnection, this, std::placeholders::_1, std::placeholders::_2));
 }
 
@@ -43,6 +44,7 @@ void TcpServer::start()
 
 void TcpServer::newConnection(int connfd, const InetAddress& peerAddr)
 {
+    // 本函数运行在 baseLoop（Acceptor 所在线程）。
     char buf[32];
     snprintf(buf, sizeof(buf), "-%d", nextConnId_++);
     std::string connName = name_ + buf;
@@ -71,6 +73,8 @@ void TcpServer::newConnection(int connfd, const InetAddress& peerAddr)
         removeConnection(connection);
     });
 
+    // 连接表由 baseLoop 独占访问。shared_ptr 是连接的主要所有者；
+    // 删除该条目后，异步任务和回调中的临时 shared_ptr 释放完毕即可析构连接。
     connections_[connName] = conn;
     // 在选中的 ioLoop 线程中完成连接建立操作。
     ioLoop->runInLoop(std::bind(&TcpConnection::connectEstablished, conn));
@@ -78,11 +82,14 @@ void TcpServer::newConnection(int connfd, const InetAddress& peerAddr)
 
 void TcpServer::removeConnection(const std::shared_ptr<TcpConnection>& conn)
 {
+    // close 事件发生在连接所属的 ioLoop，但 connections_ 属于 baseLoop，
+    // 因此不能直接 erase，必须投递回 baseLoop。
     loop_->queueInLoop(std::bind(&TcpServer::removeConnectionInLoop, this, conn));
 }
 
 void TcpServer::removeConnectionInLoop(const std::shared_ptr<TcpConnection>& conn)
 {
+    // 当前实现通过指针查找连接名。删除连接表持有的 shared_ptr 后，再清理 Channel。
     std::string connName;
     for (const auto& kv : connections_)
     {

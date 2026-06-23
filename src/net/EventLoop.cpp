@@ -1,46 +1,53 @@
 #include "net/EventLoop.h"
 #include "net/Channel.h"
 #include "net/Poller.h"
+#include "net/TimerQueue.h"
 
 __thread EventLoop* t_loopInThisThread = nullptr;
 
-const int kPollTimeMs=10000;
+namespace
+{
 
+const int kPollTimeMs = 10000;
 
 int createEventfd()
 {
-    // eventfd 用于线程间唤醒。写入 eventfd 后，poller 会检测到可读事件。
-    int evtfd=::eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
-    if(evtfd<0)
+    // eventfd 是一个可被 epoll 监听的计数器。其他线程向它写入 8 字节整数，
+    // loop 线程就会从 epoll_wait() 中醒来并处理 pendingFunctors_。
+    const int evtfd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (evtfd < 0)
     {
         LOG_FATAL("eventfd failed");
-
     }
     return evtfd;
 }
 
+} // namespace
+
 EventLoop::EventLoop()
     : poller_(Poller::newDefaultPoller(this)),
-      currentActiveChannel_(nullptr),
+      timerQueue_(new TimerQueue(this)),
       wakeupFd_(createEventfd()),
       wakeupChannel_(new Channel(this, wakeupFd_)),
-      ThreadId_(CurrentThread::tid()),
+      threadId_(CurrentThread::tid()),
       looping_(false),
       quit_(false),
       callingPendingFunctors_(false)
 {
-    LOG_DEBUG("Eventloop create %p in thread %d\n",this,ThreadId_);
-    if(t_loopInThisThread)
+    LOG_DEBUG("EventLoop create %p in thread %d", this, threadId_);
+    if (t_loopInThisThread)
     {
-        LOG_FATAL("t_loopInThisThread");
+        LOG_FATAL("another EventLoop already exists in this thread");
     }
     else
     {
-        t_loopInThisThread=this;
+        t_loopInThisThread = this;
     }
-    //设置wakeup的事件类型已经发生事件后的回调操作
-    wakeupChannel_->setReadCallback(std::bind(&EventLoop::handleRead, this, std::placeholders::_1));
-    //每一eventloop都将监听wakeup channel的EPOLLIN可读事件
+
+    // wakeupFd_ 与普通 socket 一样通过 Channel 接入 Poller。
+    // 当其他线程调用 wakeup() 时，handleRead() 负责清空 eventfd 计数。
+    wakeupChannel_->setReadCallback(
+        std::bind(&EventLoop::handleRead, this, std::placeholders::_1));
     wakeupChannel_->enableReading();
 }
 
@@ -60,16 +67,20 @@ void EventLoop::loop()
     while (!quit_)
     {
         activeChannels_.clear();
-        // 等待 IO 事件，如果没有事件则在超时时间后返回。
+
+        // 阶段 1：等待 socket、timerfd 或 eventfd 变为就绪。
         pollReturnTime_ = poller_->poll(kPollTimeMs, &activeChannels_);
-        for (auto channel : activeChannels_)
+
+        // 阶段 2：逐个分发事件。Channel 再根据 revents_ 调用对象回调。
+        for (Channel* channel : activeChannels_)
         {
-            // Poller 报告哪个 Channel 有事件，EventLoop 负责分发给 Channel 处理。
             channel->handleEvent(pollReturnTime_);
         }
-        // 处理队列中的跨线程回调。
+
+        // 阶段 3：执行跨线程任务。放在 IO 回调之后可保证本轮事件先处理完。
         doPendingFunctors();
     }
+    looping_ = false;
 }
 
 void EventLoop::quit()
@@ -79,6 +90,29 @@ void EventLoop::quit()
     {
         wakeup();
     }
+}
+
+TimerId EventLoop::runAt(Timestamp time, Functor cb)
+{
+    return timerQueue_->addTimer(std::move(cb), time, 0.0);
+}
+
+TimerId EventLoop::runAfter(double delay, Functor cb)
+{
+    return runAt(addTime(Timestamp::now(), delay), std::move(cb));
+}
+
+TimerId EventLoop::runEvery(double interval, Functor cb)
+{
+    return timerQueue_->addTimer(
+        std::move(cb),
+        addTime(Timestamp::now(), interval),
+        interval);
+}
+
+void EventLoop::cancel(TimerId timerId)
+{
+    timerQueue_->cancel(timerId);
 }
 
 void EventLoop::runInLoop(Functor cb)
@@ -98,12 +132,14 @@ void EventLoop::runInLoop(Functor cb)
 void EventLoop::queueInLoop(Functor cb)
 {
     {
+        // 锁只用于移动任务，不允许持锁执行用户回调。
         std::lock_guard<std::mutex> lock(mutex_);
         pendingFunctors_.emplace_back(std::move(cb));
     }
     if (!isInLoopThread() || callingPendingFunctors_)
     {
-        // 如果当前不在 loop 线程，或者正在执行回调，必须唤醒 loop 线程。
+        // 跨线程提交时，loop 可能阻塞在 epoll_wait()，必须主动唤醒。
+        // 如果正在执行任务队列也要唤醒，确保新加入的任务尽快进入下一轮。
         wakeup();
     }
 }
@@ -131,11 +167,11 @@ bool EventLoop::hasChannel(Channel *channel)
 }
 void EventLoop::handleRead(Timestamp)
 {
-    uint64_t one = 1;
-    ssize_t n = ::read(wakeupFd_, &one, sizeof one);
-    if (n != sizeof one)
+    uint64_t counter = 0;
+    const ssize_t n = ::read(wakeupFd_, &counter, sizeof counter);
+    if (n != sizeof counter)
     {
-        LOG_DEBUG("handleRead failed");
+        LOG_ERROR("EventLoop::handleRead read %zd bytes", n);
     }
 }
 
@@ -148,7 +184,8 @@ void EventLoop::doPendingFunctors()
         functors.swap(pendingFunctors_);
     }
 
-    // 在 loop 线程中执行 pendingFunctors_ 中的回调，避免持锁执行用户代码。
+    // swap 后立刻释放锁：用户回调可能再次 queueInLoop()，也可能执行较长时间，
+    // 均不应阻塞其他线程提交任务。
     for (const Functor& functor : functors)
     {
         functor();

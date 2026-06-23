@@ -20,7 +20,7 @@ void Logger::log(LogLevel level, const char* format, ...)
     vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
 
-    const std::string& timeStr = Timestamp::now().toString();
+    const std::string timeStr = Timestamp::now().toFormattedString();
     switch (level)
     {
         case INFO:

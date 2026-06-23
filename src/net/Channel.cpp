@@ -67,7 +67,8 @@ void Channel::update()
 
 void Channel::handleEventWithGuard(Timestamp receiveTime)
 {
-    // 根据 revents_ 调用相应回调。
+    // 一个 fd 同一轮可能同时带有多个标志，因此这里不是互斥的 else-if。
+    // 处理顺序与 muduo 一致：挂断/错误 -> 可读 -> 可写。
     if ((revents_ & EPOLLHUP) && !(revents_ & EPOLLIN))
     {
         if (closeCallback_) closeCallback_();
@@ -78,6 +79,8 @@ void Channel::handleEventWithGuard(Timestamp receiveTime)
     }
     if (revents_ & (EPOLLIN | EPOLLPRI | EPOLLRDHUP))
     {
+        // EPOLLRDHUP 表示对端关闭写端，也交给 read 回调读取；read 返回 0 后
+        // TcpConnection 会进入关闭流程。
         if (readCallback_) readCallback_(receiveTime);
     }
     if (revents_ & EPOLLOUT)

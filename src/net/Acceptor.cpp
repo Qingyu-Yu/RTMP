@@ -44,6 +44,8 @@ Acceptor::Acceptor(EventLoop* loop, const InetAddress& listenAddr, bool reusePor
       acceptSocket_(-1),
       listening_(false)
 {
+    // 构造阶段只创建和配置 socket；真正的 bind/listen 放到 listen()，
+    // 让 TcpServer 可以先完成回调和线程池配置。
     acceptSocket_ = createNonblockingSocket();
     setReuseAddr(acceptSocket_);
     if (reusePort)
@@ -75,6 +77,8 @@ void Acceptor::listen()
             LOG_FATAL("listen failed: %s", strerror(errno));
         }
 
+        // 监听 socket 的“可读”不是普通数据到达，而是 accept 队列中有新连接。
+        // enableReading() 最终会使 EpollPoller 执行 EPOLL_CTL_ADD。
         acceptChannel_->enableReading();
         listening_ = true;
 
@@ -94,6 +98,8 @@ void Acceptor::handleRead()
         InetAddress peerAddress(peerAddr);
         if (newConnectionCallback_)
         {
+            // Acceptor 到此完成职责。TcpServer 将创建 TcpConnection，并决定
+            // 由哪个 worker EventLoop 管理这个 connfd。
             newConnectionCallback_(connfd, peerAddress);
         }
     }

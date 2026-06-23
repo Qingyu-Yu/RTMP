@@ -12,6 +12,12 @@
 
 class EventLoop;
 
+// TcpConnection 表示一条已建立的 TCP 连接。
+//
+// 线程约束：
+//   - socket、Channel、输入/输出缓冲区只在所属 loop_ 线程中访问；
+//   - send()/shutdown() 可以跨线程调用，它们会把操作投递回 loop_；
+//   - 对象由 shared_ptr 管理，异步任务捕获 shared_ptr 以保证执行前对象不被销毁。
 class TcpConnection : public noncopyable, public std::enable_shared_from_this<TcpConnection>
 {
 public:
@@ -76,7 +82,7 @@ private:
     int sockfd_;                         // 连接 socket 描述符。
     InetAddress localAddr_;              // 本地地址。
     InetAddress peerAddr_;               // 对端地址。
-    bool connected_;                     // 是否已经连接成功。
+    bool connected_;                     // 当前是否允许继续发送/接收。
 
     Buffer inputBuffer_;                 // 接收数据缓冲区。
     Buffer outputBuffer_;                // 发送数据缓冲区。

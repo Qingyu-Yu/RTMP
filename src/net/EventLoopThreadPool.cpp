@@ -30,6 +30,8 @@ void EventLoopThreadPool::start()
 
     for (int i = 0; i < numThreads_; ++i)
     {
+        // startLoop() 只有在线程中的 EventLoop 就绪后才返回，因此放入 loops_
+        // 的指针可以立即用于分配连接。
         std::unique_ptr<EventLoopThread> thread(new EventLoopThread());
         loops_.push_back(thread->startLoop());
         threads_.push_back(std::move(thread));
@@ -46,6 +48,7 @@ EventLoop* EventLoopThreadPool::getNextLoop()
     EventLoop* loop = baseLoop_;
     if (!loops_.empty())
     {
+        // round-robin 只发生在 baseLoop 线程，不需要为 next_ 加锁。
         loop = loops_[next_];
         ++next_;
         if (static_cast<size_t>(next_) >= loops_.size())
