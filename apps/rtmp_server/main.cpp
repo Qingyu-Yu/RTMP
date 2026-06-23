@@ -1,4 +1,4 @@
-#include "rtmp_handshake_server.h"
+#include "rtmp/server/rtmp_server.h"
 
 #include "net/EventLoop.h"
 #include "net/InetAddress.h"
@@ -11,7 +11,7 @@ int main() {
     InetAddress listen_address(1935, "0.0.0.0");
 
     // 服务器对象生命周期覆盖整个 EventLoop，确保已注册回调中的 this 有效。
-    rtmp::server::RtmpHandshakeServer server(&loop, listen_address);
+    rtmp::server::RtmpServer server(&loop, listen_address);
 
     // 使用 4 个 I/O 工作线程处理客户端连接。
     server.setThreadNum(4);

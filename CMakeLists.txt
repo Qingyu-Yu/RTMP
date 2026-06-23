@@ -21,7 +21,7 @@ target_compile_options(project_warnings
 add_subdirectory(src)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_subdirectory(apps/rtmp_handshake_server)
+    add_subdirectory(apps/rtmp_server)
 
     if(RTMP_BUILD_EXAMPLES)
         add_subdirectory(examples/echo_server)

@@ -101,6 +101,8 @@ void Buffer::append(const std::string& str)
 
 ssize_t Buffer::readFd(int fd, int* savedErrno)
 {
+    // 如果 Buffer 当前尾部空间足够，数据直接写入 Buffer；
+    // 如果一次读到的数据更多，溢出部分进入栈上的 extrabuf，随后再 append。
     char extrabuf[65536];
     struct iovec vec[2];
     const size_t writable = writableBytes();
@@ -112,6 +114,7 @@ ssize_t Buffer::readFd(int fd, int* savedErrno)
 
     // 使用 readv 一次性读取到缓冲区和额外数组中。
     // 这样可以避免频繁扩容，提高非阻塞读取性能。
+    // readv 将两个不连续区域视为一块连续接收空间，只进行一次系统调用。
     const ssize_t n = ::readv(fd, vec, 2);
     if (n < 0)
     {
@@ -119,10 +122,12 @@ ssize_t Buffer::readFd(int fd, int* savedErrno)
     }
     else if (static_cast<size_t>(n) <= writable)
     {
+        // 数据全部落在 Buffer 原有的可写区域。
         writerIndex_ += static_cast<size_t>(n);
     }
     else
     {
+        // Buffer 原有区域已填满，把 extrabuf 中的剩余数据追加进去。
         writerIndex_ = buffer_.size();
         append(extrabuf, static_cast<size_t>(n) - writable);
     }
@@ -145,10 +150,12 @@ void Buffer::makeSpace(size_t len)
     // 若可行则移动数据，否则直接扩容。
     if (writableBytes() + prependableBytes() < len + kCheapPrepend)
     {
+        // 全部空闲空间加起来仍不够，只能扩容。
         buffer_.resize(writerIndex_ + len);
     }
     else
     {
+        // 总空间足够，仅仅是未读数据位于中间；把它移动到预留区之后。
         size_t readable = readableBytes();
         std::copy(begin() + readerIndex_, begin() + writerIndex_, begin() + kCheapPrepend);
         readerIndex_ = kCheapPrepend;

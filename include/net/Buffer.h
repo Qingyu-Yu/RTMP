@@ -4,7 +4,14 @@
 #include <string>
 #include <cstddef>
 
-// Buffer 封装了一个可读可写的环形字节缓冲区，适合网络 IO 数据收发。
+// Buffer 是可自动扩容的连续字节缓冲区，不是环形队列。
+//
+// 内存布局：
+//   [ prependable | readable data | writable ]
+//     0       readerIndex_       writerIndex_   buffer_.size()
+//
+// 消费数据只移动 readerIndex_；尾部空间不足时，makeSpace() 会优先把未读数据
+// 移到前面，仍然不够才扩容。这样常见的小包读写不需要频繁分配内存。
 class Buffer
 {
 public:
@@ -20,7 +27,7 @@ public:
     // 可写字节数。
     size_t writableBytes() const;
 
-    // 预留的可读前置字节数。
+    // readerIndex_ 之前可复用的空间（包含固定预留区）。
     size_t prependableBytes() const;
 
     // 返回当前可读数据的起始指针。
